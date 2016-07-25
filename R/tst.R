@@ -1,0 +1,12 @@
+library(tm)
+corpus <- Corpus(x = VectorSource(raw.news[1:1000]))
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, removeNumbers)
+corpus <- tm_map(corpus, stripWhitespace)
+corpus <- tm_map(corpus, removeWords, stopwords("en"))
+terms <- DocumentTermMatrix(corpus)
+data.terms <- as.matrix(terms)
+data.terms.freq <- sort(colSums(data.terms), decreasing = TRUE)
+
+library(wordcloud)
+wordcloud(names(data.terms.freq[1:20]), data.terms.freq[1:20])
