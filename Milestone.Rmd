@@ -1,0 +1,145 @@
+---
+title: "Data Science Capstone Course - Milestone Report"
+author: "T-StrawClown"
+date: "August 30, 2016"
+output: html_document
+classoption: landscape
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(cache = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+``` {r data_load}
+load("../data/raw_data.RData")
+```
+
+## Introduction
+
+This Milestone report is created as a part of Data Science Capstone course, prepared by JHU and available on Coursera. The aim of this report is to present results of raw data's exploration and considerations, which arise from exploratory analysis and might be significant in further stages of the project. It is not going to answer any questions, rather just highlight things that might have influence on future decisions.  
+I'm going to investigate raw data from all 3 sources (News, Blogs, Twitter) in order to determine how different or similar they are. Hopefully this will help me to decide if I should treat them as independent sources in later phases of model building. 
+
+## Exploratory Analysis
+
+I've merged all data sources into a single dataset leaving the source or each text available for analysis. At this stage I didn't want to bother too much with data cleaning, the only thing I've done to dataset - removed non ASCII characters from it. This is the result I've got:
+
+``` {r raw_data}
+summary(raw.df)
+```
+
+All right, so the three datasets have different number of lines (I do have to provide this info in this report for some reason).
+  
+Next thing I've done is broke up all texts from all sources into sentences. I used Apache _openNLP_ library. Although it took a lot of time, I didn't want to pick random samples from distinct sources of data and I processed all of it as I think it'll be usefull in later phases of model building.
+This is what I've got:
+``` {r sentence_data}
+sent.df <- readRDS("../data/sentences.Rda")
+```
+
+``` {r sents}
+summary(sent.df)
+sent.head <- head(sent.df)
+```
+  
+And here are few samples...
+
+``` {r sents_head}
+kable(sent.head)
+```
+  
+
+So now I have close to 9 millions sentences, which I'm going to treat as my raw data source for modelling and model training. Notice that I did not remove punctuations, any kind of stopwords, didn't use word stemming or similar techniques that would alter source data in one way or another. Most likely I'll do some of it later in the process, however, currently I approach this data as complete dataset of raw data, which I'm going to use to build n-grams and later analyze them in order to see if some sort of data adjustment could improve prediction power of my model. I might try to identify persons or places or other types of information contained in raw text and I'm affraid that if I strip it too much, I might loose some vital info which helps existing libraries efficiently work with texts.  
+  
+So let's get to comparison of data comming form different sources (News, Blogs, Twitter). Since the dataset has almost 9 million rows, I'm going to randomly select 1 % of data from each partition (News, Blogs, Twitter).
+
+``` {r data_partitions}
+set.seed(42)
+library(caret)
+inlist <- createDataPartition(sent.df[,1], p = 0.01, list = FALSE)
+sent.sample <- sent.df[inlist,]
+summary(sent.sample)
+```
+  
+As you can see sampled records are weighted based on total number of sentences in each partition. Let's see some descriptive statistics (provided by _qdap_ library).
+
+``` {r word_stats, fig.width = 11}
+library(qdap)
+library(dplyr)
+sent.sample.ws <- word_stats(text.var = sent.sample$sentence,
+                             grouping.var = sent.sample$source,
+                             parallel = TRUE)
+plot(sent.sample.ws, label = TRUE, lab.digits = 2, high = "green", low = "orange", text.color = "black")
+```
+
+For detailed explanation of all parameter meanings refer to the documentation of _qdap_ package [here](https://trinker.github.io/qdap/word_stats.html). What I'm interested in particular is wps - words per sentence statistic, which clearly indicates that Twitter sentences are shorter and this might be important when building n-grams. Also notice that Twitter proportion of statements (p.state), proportion of exclamations (p.exclm) is significantly different from Blogs and News. In general it looks like News and Blogs are more or less similar and Twitter is a bit different.
+
+I'm going to examine one more thing - 200 most frequent words in each data partition and see how they compare to 200 most frequent words overall.
+
+``` {r top200}
+sent.sample.wf <- with(sent.sample, wfdf(sentence, source, parallel = TRUE))
+sent.sample.wf <- sent.sample.wf %>%
+  mutate(Total = Blogs + News + Twitter)
+
+sent.sample.wf.rank <- sent.sample.wf %>%
+  mutate("Blogs Rank" = rank(-Blogs),
+         "News Rank" = rank(-News),
+         "Twitter Rank" = rank(-Twitter),
+         "Total Rank" = rank(-Total)) %>%
+  arrange(desc(Total))
+sent.sample.top200 <- head(sent.sample.wf.rank, 200)
+sent.sample.top200out <- sent.sample.top200 %>%
+  filter(`Blogs Rank` > 200 | `News Rank` > 200 | `Twitter Rank` > 200)
+```
+
+``` {r top200out, fig.width = 11}
+sent.sample.top200out.blogs <- sent.sample.top200 %>%
+  filter(`Blogs Rank` > 200) %>%
+  select(Words, `Blogs Rank`)
+sent.sample.top200out.news <- sent.sample.top200 %>%
+  filter(`News Rank` > 200) %>%
+  select(Words, `News Rank`)
+sent.sample.top200out.twitter <- sent.sample.top200 %>%
+  filter(`Twitter Rank` > 200) %>%
+  select(Words, `Twitter Rank`)
+plotdata.top200out <- as.data.frame(
+  rbind(cbind(source = "Blogs", word = sent.sample.top200out.blogs$Words, rank = sent.sample.top200out.blogs$`Blogs Rank`),
+        cbind(source = "News", word = sent.sample.top200out.news$Words, rank = sent.sample.top200out.news$`News Rank`),
+        cbind(source = "Twitter", word = sent.sample.top200out.twitter$Words, rank = sent.sample.top200out.twitter$`Twitter Rank`))
+  )
+plotdata.top200out$rank = as.numeric(as.character(plotdata.top200out$rank))
+plotdata.top200out <- plotdata.top200out %>%
+  mutate(lbl = ifelse(rank > 1000, paste(as.character(rank), word), ""))
+plotdata.top200out.medians <- plotdata.top200out %>%
+  group_by(source) %>%
+  summarize(median = median(rank))
+ggplot(data = plotdata.top200out, aes(source, rank, fill = source)) +
+  geom_boxplot() +
+  #geom_jitter() +
+  scale_y_log10() +
+  geom_text(aes(label = lbl, color = source), size = 3, hjust = "left", nudge_x = .025) +
+  geom_label(data = plotdata.top200out.medians, aes(source, median, label = median)) +
+  ggtitle("Words within top 200 words overall, which are outside of top 200 words in at least one of data sources")
+lol.blogs <- plotdata.top200out$rank[plotdata.top200out$word == "lol" & plotdata.top200out$source == "Blogs"]
+lol.news <- plotdata.top200out$rank[plotdata.top200out$word == "lol" & plotdata.top200out$source == "News"]
+```
+
+What this figure shows is - rank of individual words (higher number means they are used less frequently), which are among 200 most popular words overall in the entire dataset of sentences, but are outside of 200 most popular words in any (one or two) of three partitions (Blogs, News, Twitter). For example word "lol" is ranked `r as.character(lol.blogs)` most popular word in Blogs, `r as.character(lol.news)` most popular word in News and is within top 200 most popular words in Twitter. What this figure suggests is that all common words are frequently used in Twitter. However, there are certain words that are frequently used in Twitter and are not so pupular in other 2 - Blogs and News - sources. This suggests me that I'll have to take a closer look at Twitter data and most likely apply some additional rules of data processing when working with it.
+
+## Conclusions
+
+So far I'm leaning towards the following:
+
+* Blogs and News texts seem to be more or less similar and they both will most likely follow the same words processing routines necessary to create reliable n-grams
+* Twitter texts are much shorter and have some unique words rarely used in Blogs and News. Such expressions will require a closer look and decisions if they should stay in or should be filtered out
+
+## Modelling Approach
+
+So far my plan is as follows (now hold on to your chair):
+
+* I'm going to strip the data from things which in my opinion are not essential for the task (like punctuation, numbers, all kinds of special signs/characters and rare words etc.)
+* Then I'll use GloVe library to vectorize all words and create vocabulary - a set of vector representations of words in the word vector space, which is created on word to word co-occurence in the corpus (more it about [here](http://nlp.stanford.edu/projects/glove/))
+* Finally I'm going to train neural network to predict the location of next word in that vector space. My assumption (which I'd like to validate during this course) is that words which are nearby predicted location should be valid candidates for beeing the next word
+* I'll check the results and if such approach turns out to be lunatic, I'll just stick to Markov chains and N-Grams based predictions.
